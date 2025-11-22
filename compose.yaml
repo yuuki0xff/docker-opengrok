@@ -12,6 +12,11 @@ services:
       - opengrok_src:/opengrok/src/
       - ./example/:/example/:ro
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_FILE_COUNT:-3}"
     develop:
       watch:
         - action: rebuild
