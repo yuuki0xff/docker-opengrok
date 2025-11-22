@@ -223,6 +223,8 @@ class SourceCodeDownloader:
             clone_cmd = ["git", "clone"]
             if git_spec.depth is not None:
                 clone_cmd.extend(["--depth", str(git_spec.depth)])
+            if git_spec.ref:
+                clone_cmd.extend(["--branch", git_spec.ref])
             clone_cmd.extend([git_spec.url, str(target_dir)])
 
             subprocess.run(
@@ -232,15 +234,6 @@ class SourceCodeDownloader:
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )
-            if git_spec.ref:
-                subprocess.run(
-                    ["git", "switch", git_spec.ref],
-                    cwd=target_dir,
-                    check=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=sys.stdout,
-                    stderr=sys.stderr,
-                )
 
             # 新規クローンの場合は常にTrue
             return True
