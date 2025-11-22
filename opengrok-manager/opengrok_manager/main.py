@@ -420,10 +420,14 @@ class OpenGrokClient:
         # プロジェクトのメタデータファイルを削除
         self.json_manager.delete_project(project.name)
 
-    def download_source_code(self, project: Project):
-        """プロジェクトのソースコードをダウンロード"""
+    def download_source_code(self, project: Project) -> bool:
+        """プロジェクトのソースコードをダウンロード
+        
+        Returns:
+            bool: 変更があった場合はTrue、変更がなかった場合はFalse
+        """
         downloader = SourceCodeDownloader(self.json_manager.src_dir, self.json_manager)
-        downloader.download(project)
+        return downloader.download(project)
 
 
 def main():
@@ -444,8 +448,17 @@ def main():
         if expected != actual and actual is not None:
             client.delete_project(actual)
 
-        client.download_source_code(expected)
-        client.add_project(expected)
+        changed = client.download_source_code(expected)
+        if not changed:
+            logger.info("Project source code not changed", name=name)
+            continue
+
+        logger.info("Project source code changed", name=name)
+        if actual is None:
+            logger.info("Adding project", name=name)
+            client.add_project(expected)
+        
+        logger.info("Reindexing project", name=name)
         client.reindex_project(expected)
 
 
