@@ -92,6 +92,12 @@ class OpenGrokAPIClient:
         response = requests.delete(f"{self.url}/projects/{project_name}")
         response.raise_for_status()
 
+    def get_configuration(self) -> bytes:
+        """OpenGrok APIから設定ファイルを取得"""
+        response = requests.get(f"{self.url}/configuration")
+        response.raise_for_status()
+        return response.content
+
 
 class ProjectJsonManager:
     """project.jsonファイルの読み書き操作を担当するクラス"""
@@ -388,8 +394,66 @@ class OpenGrokClient:
         return projects
 
     def add_project(self, project: Project):
-        # OpenGrok APIにプロジェクトを追加
-        self.api_client.add_project(project.name)
+        # https://github.com/oracle/opengrok/wiki/Per-project-management-and-workflow
+        # opengrok-projadmコマンドでプロジェクトを追加
+        cmd = [
+            "opengrok-projadm",
+            "--jar", "/opengrok/lib/opengrok.jar",
+            "--base", "/opengrok/",
+            "--uri", self.base_uri,
+            "--add", project.name,
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+
+        # 再生成したconfigをreload
+        # 設定ファイルをAPIから取得して一時ファイルに保存
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.xml') as tmp_file:
+            tmp_config_path = pathlib.Path(tmp_file.name)
+            try:
+                config_content = self.api_client.get_configuration()
+                tmp_file.write(config_content)
+                tmp_file.flush()
+
+                # opengrok-indexerを実行
+                cmd = [
+                    "opengrok-indexer",
+                    "--jar", "/opengrok/lib/opengrok.jar", "--",
+                    "-c", "/usr/local/bin/ctags",
+                    "-U", self.base_uri,
+                    "-R", str(tmp_config_path),
+                    "-H", project.name,
+                ]
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+
+                # opengrok-projadm --refreshを実行
+                cmd = [
+                    "opengrok-projadm",
+                    "--jar", "/opengrok/lib/opengrok.jar",
+                    "--base", "/opengrok/",
+                    "--uri", self.base_uri,
+                    "--refresh",
+                ]
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+            finally:
+                tmp_config_path.unlink(missing_ok=True)
 
         # プロジェクトのメタデータをファイルに保存
         self.json_manager.save_project(project)
@@ -415,8 +479,21 @@ class OpenGrokClient:
         result.check_returncode()
 
     def delete_project(self, project: Project):
-        # OpenGrok APIからプロジェクトを削除
-        self.api_client.delete_project(project.name)
+        # opengrok-projadmコマンドでプロジェクトを削除
+        cmd = [
+            "opengrok-projadm",
+            "--jar", "/opengrok/lib/opengrok.jar",
+            "--base", "/opengrok/",
+            "--uri", self.base_uri,
+            "--delete", project.name,
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
 
         # プロジェクトのメタデータファイルを削除
         self.json_manager.delete_project(project.name)
@@ -458,7 +535,7 @@ def main():
         if actual is None:
             logger.info("Adding project", name=name)
             client.add_project(expected)
-        
+
         logger.info("Reindexing project", name=name)
         client.reindex_project(expected)
 
