@@ -10,9 +10,9 @@ import tempfile
 import typing
 import zipfile
 
-from dataclasses_json import dataclass_json
 import requests
 import structlog
+from dataclasses_json import dataclass_json
 
 logger = structlog.get_logger()
 
@@ -161,7 +161,15 @@ class SourceCodeDownloader:
         if git_spec is None:
             raise ValueError(f"Project {project.name} has no git specification")
 
-        if target_dir.exists() and (target_dir / ".git").exists():
+        # 既存リポジトリを使用するかどうかを判定
+        old_project = self.json_manager.load_project(project.name)
+        use_existing_repo = (
+                target_dir.exists()
+                and (target_dir / ".git").exists()
+                and old_project == project
+        )
+
+        if use_existing_repo:
             # 既存ディレクトリがある場合: git fetch && git reset --hard origin/<ref>
             # fetch前のHEAD commit idを取得
             result = subprocess.run(
