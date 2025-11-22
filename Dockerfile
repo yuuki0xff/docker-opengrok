@@ -12,3 +12,4 @@ ENV PATH="$PATH:/root/.local/bin"
 COPY opengrok-manager/ /opengrok-manager/
 RUN pipx install -e /opengrok-manager/
 COPY scripts/ /scripts/
+COPY example/ /example/
