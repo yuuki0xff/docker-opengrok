@@ -1,0 +1,453 @@
+import dataclasses
+import hashlib
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import typing
+import zipfile
+
+from dataclasses_json import dataclass_json
+import requests
+import structlog
+
+logger = structlog.get_logger()
+
+
+@dataclass_json
+@dataclasses.dataclass
+class GitSpec:
+    url: str
+    ref: typing.Optional[str] = None
+    depth: typing.Optional[int] = None
+
+
+@dataclass_json
+@dataclasses.dataclass
+class HashSpec:
+    algorithm: typing.Literal["sha1", "sha256"]
+    value: str
+
+
+@dataclass_json
+@dataclasses.dataclass
+class TarSpec:
+    url: str
+    digest: typing.Optional[HashSpec] = None
+
+
+@dataclass_json
+@dataclasses.dataclass
+class ZipSpec:
+    url: str
+    digest: typing.Optional[HashSpec] = None
+
+
+@dataclass_json
+@dataclasses.dataclass
+class Project:
+    name: str
+    git: typing.Optional[GitSpec] = None
+    tar: typing.Optional[TarSpec] = None
+    zip: typing.Optional[ZipSpec] = None
+
+
+@dataclass_json
+@dataclasses.dataclass
+class ProjectDefsJson:
+    projects: typing.List[Project]
+
+    @staticmethod
+    def parse(json_str: str) -> typing.Dict[str, Project]:
+        project_defs = ProjectDefsJson.from_json(json_str)
+        return {project.name: project for project in project_defs.projects}
+
+
+class OpenGrokAPIClient:
+    """OpenGrok APIへのHTTPリクエストを担当するクラス"""
+
+    def __init__(self, url: str):
+        self.url = url
+
+    def get_project_names(self) -> list[str]:
+        """OpenGrok APIからプロジェクト名のリストを取得"""
+        response = requests.get(f"{self.url}/projects")
+        response.raise_for_status()
+        return response.json()
+
+    def add_project(self, project_name: str):
+        """OpenGrok APIにプロジェクトを追加"""
+        response = requests.post(
+            f"{self.url}/projects",
+            headers={"Content-Type": "text/plain"},
+            data=project_name
+        )
+        response.raise_for_status()
+
+    def delete_project(self, project_name: str):
+        """OpenGrok APIからプロジェクトを削除"""
+        response = requests.delete(f"{self.url}/projects/{project_name}")
+        response.raise_for_status()
+
+
+class ProjectJsonManager:
+    """project.jsonファイルの読み書き操作を担当するクラス"""
+
+    def __init__(self, src_dir: pathlib.Path):
+        self.src_dir = src_dir
+
+    def load_project(self, project_name: str) -> typing.Optional[Project]:
+        """project.jsonファイルからプロジェクト情報を読み込む"""
+        project_json_path = self.src_dir / f"{project_name}.project.json"
+        if not project_json_path.exists():
+            return None
+
+        try:
+            with open(project_json_path, "r") as f:
+                project = Project.from_json(f.read())
+                if project.name != project_name:
+                    raise ValueError(f"Project name mismatch: {project.name} != {project_name}")
+                return project
+        except Exception:
+            return None
+
+    def save_project(self, project: Project):
+        """project.jsonファイルにプロジェクト情報を保存"""
+        project_json_path = self.src_dir / f"{project.name}.project.json"
+        with open(project_json_path, "w") as f:
+            f.write(project.to_json(indent=2))
+
+    def delete_project(self, project_name: str):
+        """project.jsonファイルを削除"""
+        project_json_path = self.src_dir / f"{project_name}.project.json"
+        project_json_path.unlink(missing_ok=True)
+
+
+class SourceCodeDownloader:
+    """ソースコードのダウンロードを担当するクラス"""
+
+    def __init__(self, src_dir: pathlib.Path, json_manager: ProjectJsonManager):
+        self.src_dir = src_dir
+        self.json_manager = json_manager
+
+    def download(self, project: Project) -> bool:
+        """プロジェクトのソースコードをダウンロード
+        
+        Returns:
+            bool: 変更があった場合はTrue、変更がなかった場合はFalse
+        """
+        target_dir = self.src_dir / project.name
+
+        # git, tar, zipの順で確認し、最初に見つかったものを使用
+        if project.git is not None:
+            return self._download_git(project, target_dir)
+        elif project.tar is not None:
+            return self._download_tar(project, target_dir)
+        elif project.zip is not None:
+            return self._download_zip(project, target_dir)
+        else:
+            raise ValueError(f"Project {project.name} has no git, tar, or zip specification")
+
+    def _download_git(self, project: Project, target_dir: pathlib.Path) -> bool:
+        """Git形式でソースコードをダウンロード
+        
+        Returns:
+            bool: 変更があった場合はTrue、変更がなかった場合はFalse
+        """
+        git_spec = project.git
+        if git_spec is None:
+            raise ValueError(f"Project {project.name} has no git specification")
+
+        if target_dir.exists() and (target_dir / ".git").exists():
+            # 既存ディレクトリがある場合: git fetch && git reset --hard origin/<ref>
+            # fetch前のHEAD commit idを取得
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=target_dir,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+                text=True,
+            )
+            old_commit_id = result.stdout.strip()
+
+            subprocess.run(
+                ["git", "fetch", "origin"],
+                cwd=target_dir,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            ref = git_spec.ref or "HEAD"
+            subprocess.run(
+                ["git", "reset", "--hard", f"origin/{ref}"],
+                cwd=target_dir,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+
+            # fetch後のHEAD commit idを取得
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=target_dir,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+                text=True,
+            )
+            new_commit_id = result.stdout.strip()
+
+            # commit idが変化していた場合はTrue、同一の場合はFalse
+            return old_commit_id != new_commit_id
+        else:
+            # 既存ディレクトリがない場合: git clone
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+
+            clone_cmd = ["git", "clone"]
+            if git_spec.depth is not None:
+                clone_cmd.extend(["--depth", str(git_spec.depth)])
+            clone_cmd.extend([git_spec.url, str(target_dir)])
+
+            subprocess.run(
+                clone_cmd,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            if git_spec.ref:
+                subprocess.run(
+                    ["git", "switch", git_spec.ref],
+                    cwd=target_dir,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+
+            # 新規クローンの場合は常にTrue
+            return True
+
+    def _download_tar(self, project: Project, target_dir: pathlib.Path) -> bool:
+        """Tar形式でソースコードをダウンロード
+        
+        Returns:
+            bool: 変更があった場合はTrue、変更がなかった場合はFalse
+        """
+        tar_spec = project.tar
+        if tar_spec is None:
+            raise ValueError(f"Project {project.name} has no tar specification")
+
+        # 既存ディレクトリがある場合、以前のProject情報と比較
+        if target_dir.exists():
+            old_project = self.json_manager.load_project(project.name)
+            if old_project is not None and old_project.tar == tar_spec:
+                # 一致する場合: 何もしない
+                return False
+            # 異なる場合: ディレクトリを削除
+            shutil.rmtree(target_dir)
+
+        # HTTPダウンロード
+        response = requests.get(tar_spec.url, stream=True)
+        response.raise_for_status()
+
+        # 一時ファイルに保存
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_path = pathlib.Path(tmp_file.name)
+            try:
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+                tmp_file.flush()
+
+                # ハッシュ検証
+                if tar_spec.digest is not None:
+                    self._verify_hash(tmp_path, tar_spec.digest)
+
+                # tar展開
+                target_dir.parent.mkdir(parents=True, exist_ok=True)
+                with tarfile.open(tmp_path, "r:*") as tar:
+                    tar.extractall(path=target_dir.parent)
+                    # tarファイルの内容が1つのディレクトリに展開される場合、そのディレクトリをtarget_dirにリネーム
+                    if not target_dir.exists():
+                        members = tar.getmembers()
+                        if members:
+                            first_member = members[0]
+                            if first_member.isdir():
+                                extracted_dir = target_dir.parent / first_member.name
+                                if extracted_dir.exists() and extracted_dir != target_dir:
+                                    extracted_dir.rename(target_dir)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        # ダウンロード/再ダウンロードが実行された場合はTrue
+        return True
+
+    def _verify_hash(self, file_path: pathlib.Path, digest: HashSpec):
+        """ファイルのハッシュ値を検証"""
+        hash_obj = hashlib.sha1() if digest.algorithm == "sha1" else hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_obj.update(chunk)
+        computed_hash = hash_obj.hexdigest()
+        if computed_hash != digest.value:
+            raise ValueError(
+                f"Hash mismatch: expected {digest.value}, got {computed_hash}"
+            )
+
+    def _download_zip(self, project: Project, target_dir: pathlib.Path) -> bool:
+        """Zip形式でソースコードをダウンロード
+        
+        Returns:
+            bool: 変更があった場合はTrue、変更がなかった場合はFalse
+        """
+        zip_spec = project.zip
+        if zip_spec is None:
+            raise ValueError(f"Project {project.name} has no zip specification")
+
+        # 既存ディレクトリがある場合、以前のProject情報と比較
+        if target_dir.exists():
+            old_project = self.json_manager.load_project(project.name)
+            if old_project is not None and old_project.zip == zip_spec:
+                # 一致する場合: 何もしない
+                return False
+            # 異なる場合: ディレクトリを削除
+            shutil.rmtree(target_dir)
+
+        # HTTPダウンロード
+        response = requests.get(zip_spec.url, stream=True)
+        response.raise_for_status()
+
+        # 一時ファイルに保存
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_path = pathlib.Path(tmp_file.name)
+            try:
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+                tmp_file.flush()
+
+                # ハッシュ検証
+                if zip_spec.digest is not None:
+                    self._verify_hash(tmp_path, zip_spec.digest)
+
+                # zip展開
+                target_dir.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(tmp_path, "r") as zip_file:
+                    zip_file.extractall(path=target_dir.parent)
+                    # zipファイルの内容が1つのディレクトリに展開される場合、そのディレクトリをtarget_dirにリネーム
+                    if not target_dir.exists():
+                        members = zip_file.namelist()
+                        if members:
+                            first_member = members[0]
+                            if first_member.endswith("/"):
+                                extracted_dir = target_dir.parent / first_member.rstrip("/")
+                                if extracted_dir.exists() and extracted_dir != target_dir:
+                                    extracted_dir.rename(target_dir)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        # ダウンロード/再ダウンロードが実行された場合はTrue
+        return True
+
+
+class OpenGrokClient:
+    """OpenGrokAPIClientとProjectJsonManagerを統合し、統一的なインターフェースを提供するクラス"""
+
+    def __init__(self, base_uri: str, src_dir: pathlib.Path):
+        self.base_uri = base_uri
+        self.api_client = OpenGrokAPIClient(f"{base_uri}/api/v1")
+        self.json_manager = ProjectJsonManager(src_dir)
+
+    def get_projects(self) -> dict[str, Project]:
+        # OpenGrok APIからプロジェクト名のリストを取得
+        project_names = self.api_client.get_project_names()
+
+        projects = {}
+        invalid_project_names = set()
+        for project_name in project_names:
+            # 各プロジェクトの詳細メタデータをファイルから読み込む
+            project = self.json_manager.load_project(project_name)
+            if project is not None:
+                projects[project_name] = project
+            else:
+                # ファイルが存在しない、もしくはproject.jsonが不正な場合はエラー処理とする。
+                invalid_project_names.add(project_name)
+
+        for project_name in invalid_project_names:
+            self.delete_project(Project(name=project_name))
+
+        return projects
+
+    def add_project(self, project: Project):
+        # OpenGrok APIにプロジェクトを追加
+        self.api_client.add_project(project.name)
+
+        # プロジェクトのメタデータをファイルに保存
+        self.json_manager.save_project(project)
+
+    def reindex_project(self, project: Project):
+        """プロジェクトのインデックスを再生成"""
+        cmd = [
+            "opengrok-reindex-project",
+            "-J=-Djava.util.logging.config.file=/opengrok/etc/logging.properties",
+            "-a", "/opengrok/lib/opengrok.jar",
+            "--uri", self.base_uri,
+            "--printoutput",
+            "-P", project.name,
+            "--",
+            "-c", "/usr/local/bin/ctags",
+            "-H",
+            # "-m", "10m",
+            "-r", "dirbased",
+            "--renamedHistory", "on",
+            "--threads", str(os.cpu_count() or 1),
+        ]
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)
+        result.check_returncode()
+
+    def delete_project(self, project: Project):
+        # OpenGrok APIからプロジェクトを削除
+        self.api_client.delete_project(project.name)
+
+        # プロジェクトのメタデータファイルを削除
+        self.json_manager.delete_project(project.name)
+
+    def download_source_code(self, project: Project):
+        """プロジェクトのソースコードをダウンロード"""
+        downloader = SourceCodeDownloader(self.json_manager.src_dir, self.json_manager)
+        downloader.download(project)
+
+
+def main():
+    expected_projects = ProjectDefsJson.parse(sys.stdin.read())
+    client = OpenGrokClient('http://localhost:8080', pathlib.Path("/opengrok/src"))
+    actual_projects = client.get_projects()
+    logger.info("get_projects", expected_projects=expected_projects, actual_projects=actual_projects)
+
+    extra_project_names = set(actual_projects.keys()) - set(expected_projects.keys())
+    for project_name in extra_project_names:
+        client.delete_project(actual_projects[project_name])
+
+    for name in expected_projects:
+        expected = expected_projects[name]
+        actual = actual_projects.get(name)
+        logger.info("Processing project", name=name, expected=expected, actual=actual)
+
+        if expected != actual and actual is not None:
+            client.delete_project(actual)
+
+        client.download_source_code(expected)
+        client.add_project(expected)
+        client.reindex_project(expected)
+
+
+if __name__ == "__main__":
+    main()

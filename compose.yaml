@@ -1,0 +1,34 @@
+services:
+  opengrok:
+    command: ["/scripts/server.sh"]
+    init: true
+    build:
+      context: .
+    ports:
+      - "${OPENGROK_PORT:-8080}:8080"
+    volumes:
+      - opengrok_data:/opengrok/data/
+      - opengrok_etc:/opengrok/etc/
+      - opengrok_src:/opengrok/src/
+      - ./example/:/example/:ro
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: Dockerfile
+        - action: rebuild
+          path: compose.yaml
+        - action: sync+restart
+          path: scripts/server.sh
+          target: /scripts/server.sh
+        - action: sync
+          path: example/
+          target: /example/
+        - action: sync
+          path: opengrok-manager/
+          target: /opengrok-manager/
+
+volumes:
+  opengrok_data:
+  opengrok_etc:
+  opengrok_src:

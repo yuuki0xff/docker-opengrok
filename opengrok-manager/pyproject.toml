@@ -1,0 +1,17 @@
+[project]
+name = "opengrok-manager"
+version = "0.1.0"
+description = "OpenGrok manager tool"
+requires-python = ">=3.12"
+dependencies = [
+    "dataclasses-json",
+    "requests",
+    "structlog",
+]
+
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+opengrok-manager = "opengrok_manager.main:main"

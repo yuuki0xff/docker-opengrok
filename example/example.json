@@ -1,0 +1,12 @@
+{
+  "projects": [
+    {
+      "name": "opengrok",
+      "git": {
+        "url": "https://github.com/oracle/opengrok",
+        "depth": 10
+      }
+    }
+  ]
+}
+
