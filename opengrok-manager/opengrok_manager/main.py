@@ -526,9 +526,13 @@ def main():
         if expected != actual and actual is not None:
             client.delete_project(actual)
 
-        changed = client.download_source_code(expected)
-        if not changed:
-            logger.info("Project source code not changed", name=name)
+        try:
+            changed = client.download_source_code(expected)
+            if not changed:
+                logger.info("Project source code not changed", name=name)
+                continue
+        except Exception as e:
+            logger.info("Failed to download source code", name=name, exception=str(e))
             continue
 
         logger.info("Project source code changed", name=name)
