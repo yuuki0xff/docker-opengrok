@@ -7,9 +7,9 @@ services:
     ports:
       - "${OPENGROK_PORT:-8080}:8080"
     volumes:
-      - opengrok_data:/opengrok/data/
-      - opengrok_etc:/opengrok/etc/
-      - opengrok_src:/opengrok/src/
+      - "${OPENGROK_DATA:-opengrok_data}:/opengrok/data/"
+      - "${OPENGROK_ETC:-opengrok_etc}:/opengrok/etc/"
+      - "${OPENGROK_SRC:-opengrok_src}:/opengrok/src/"
       - ./example/:/example/:ro
     restart: unless-stopped
     logging:
