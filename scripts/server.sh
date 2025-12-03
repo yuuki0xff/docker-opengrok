@@ -1,6 +1,16 @@
 #!/bin/bash
 set -eu
 
+# Setup SSH files from secrets.
+if [ -f /run/secrets/ssh_private_key ]; then
+    # NOTE: Destination file name that is included in the default values of ssh's IdentityFile.
+    # It does not matter if the actual key pair type is different.
+    install -d -m 700 /root/.ssh
+    install -m 400 /run/secrets/ssh_private_key /root/.ssh/id_ed25519
+    install -m 400 /run/secrets/ssh_public_key /root/.ssh/id_ed25519.pub
+    install -m 600 /run/secrets/ssh_known_hosts /root/.ssh/known_hosts
+fi
+
 if [ ! -f /opengrok/etc/configuration.xml ]; then
     echo "No configuration file found, initializing..."
     opengrok-indexer \
