@@ -197,15 +197,35 @@ class SourceCodeDownloader:
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )
+            # fetch後、refがタグかブランチかを判定して適切にresetする
             ref = git_spec.ref or "HEAD"
-            subprocess.run(
-                ["git", "reset", "--hard", f"origin/{ref}"],
+
+            # まずタグとして試す
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/tags/{ref}"],
                 cwd=target_dir,
-                check=True,
-                stdin=subprocess.DEVNULL,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
+                capture_output=True,
             )
+            if result.returncode == 0:
+                # タグの場合
+                subprocess.run(
+                    ["git", "reset", "--hard", ref],
+                    cwd=target_dir,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+            else:
+                # ブランチの場合
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{ref}"],
+                    cwd=target_dir,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
 
             # fetch後のHEAD commit idを取得
             result = subprocess.run(
