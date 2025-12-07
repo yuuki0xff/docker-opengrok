@@ -99,24 +99,42 @@ class ProjectJsonManager:
 
     def _get_project_json_path(self, project_name: str) -> pathlib.Path:
         """project.jsonファイルのパスを生成"""
-        return self.data_dir / f"{project_name}.project.json"
+        return self.data_dir / project_name / "project.json"
 
     def migrate_project(self, project_name: str):
-        """src_dirからdata_dirにproject.jsonファイルをマイグレーション。
-        このロジックは、移行が完了次第削除する。"""
-        old_path = self.src_dir / f"{project_name}.project.json"
+        """project.jsonファイルのマイグレーションを実行。
+        1. src_dirからdata_dirへのマイグレーション（古いロジック）
+        2. 古い形式（${data_dir}/${project_name}.project.json）から新しい形式（${data_dir}/${project_name}/project.json）へのマイグレーション"""
+        # マイグレーション1: src_dirからdata_dirへのマイグレーション（将来的に廃止予定）
+        old_src_path = self.src_dir / f"{project_name}.project.json"
         new_path = self._get_project_json_path(project_name)
 
-        if old_path.exists() and not new_path.exists():
+        if old_src_path.exists() and not new_path.exists():
             try:
                 # data_dirが存在しない場合は作成
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 # ファイルを移動
-                shutil.move(str(old_path), str(new_path))
-                logger.info("Migrated project.json", project_name=project_name, from_path=str(old_path),
+                shutil.move(str(old_src_path), str(new_path))
+                logger.info("Migrated project.json from src_dir", project_name=project_name,
+                            from_path=str(old_src_path),
                             to_path=str(new_path))
             except Exception as e:
-                raise Exception(f"Failed to migrate project.json: {e}") from e
+                raise Exception(f"Failed to migrate project.json from src_dir: {e}") from e
+
+        # マイグレーション2: 古い形式から新しい形式へのマイグレーション
+        old_flat_path = self.data_dir / f"{project_name}.project.json"
+        if old_flat_path.exists() and not new_path.exists():
+            try:
+                # プロジェクトディレクトリを作成
+                project_dir = self.data_dir / project_name
+                project_dir.mkdir(parents=True, exist_ok=True)
+                # ファイルを移動
+                shutil.move(str(old_flat_path), str(new_path))
+                logger.info("Migrated project.json to new format", project_name=project_name,
+                            from_path=str(old_flat_path),
+                            to_path=str(new_path))
+            except Exception as e:
+                raise Exception(f"Failed to migrate project.json to new format: {e}") from e
 
     def load_project(self, project_name: str) -> typing.Optional[Project]:
         """project.jsonファイルからプロジェクト情報を読み込む"""
@@ -137,9 +155,8 @@ class ProjectJsonManager:
     def save_project(self, project: Project):
         """project.jsonファイルにプロジェクト情報を保存"""
         self.migrate_project(project.name)
-        # data_dirが存在しない場合は作成
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         project_json_path = self._get_project_json_path(project.name)
+        project_json_path.parent.mkdir(parents=True, exist_ok=True)
         with open(project_json_path, "w") as f:
             f.write(project.to_json(indent=2))
 
@@ -530,7 +547,7 @@ def main():
 
     # Directory layout:
     #  ${src_dir}/${project_name}/ - git worktree or content of archive file.
-    #  ${data_dir}/${project_name}.project.json - project metadata.
+    #  ${data_dir}/${project_name}/project.json - project metadata.
     src_dir = pathlib.Path("/opengrok/src")
     data_dir = pathlib.Path("/opengrok/manager_data")
     client = OpenGrokClient('http://localhost:8080', src_dir, data_dir)
