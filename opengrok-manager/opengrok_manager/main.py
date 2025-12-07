@@ -93,12 +93,31 @@ class OpenGrokAPIClient:
 class ProjectJsonManager:
     """project.jsonファイルの読み書き操作を担当するクラス"""
 
-    def __init__(self, src_dir: pathlib.Path):
-        self.src_dir = src_dir
+    def __init__(self, data_dir: pathlib.Path, src_dir: pathlib.Path):
+        self.data_dir = data_dir
+        self.src_dir = src_dir  # マイグレーション専用（将来的に廃止予定）
+
+    def migrate_project(self, project_name: str):
+        """src_dirからdata_dirにproject.jsonファイルをマイグレーション。
+        このロジックは、移行が完了次第削除する。"""
+        old_path = self.src_dir / f"{project_name}.project.json"
+        new_path = self.data_dir / f"{project_name}.project.json"
+
+        if old_path.exists() and not new_path.exists():
+            try:
+                # data_dirが存在しない場合は作成
+                self.data_dir.mkdir(parents=True, exist_ok=True)
+                # ファイルを移動
+                shutil.move(str(old_path), str(new_path))
+                logger.info("Migrated project.json", project_name=project_name, from_path=str(old_path),
+                            to_path=str(new_path))
+            except Exception as e:
+                raise Exception(f"Failed to migrate project.json: {e}") from e
 
     def load_project(self, project_name: str) -> typing.Optional[Project]:
         """project.jsonファイルからプロジェクト情報を読み込む"""
-        project_json_path = self.src_dir / f"{project_name}.project.json"
+        self.migrate_project(project_name)
+        project_json_path = self.data_dir / f"{project_name}.project.json"
         if not project_json_path.exists():
             return None
 
@@ -113,13 +132,17 @@ class ProjectJsonManager:
 
     def save_project(self, project: Project):
         """project.jsonファイルにプロジェクト情報を保存"""
-        project_json_path = self.src_dir / f"{project.name}.project.json"
+        self.migrate_project(project.name)
+        # data_dirが存在しない場合は作成
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        project_json_path = self.data_dir / f"{project.name}.project.json"
         with open(project_json_path, "w") as f:
             f.write(project.to_json(indent=2))
 
     def delete_project(self, project_name: str):
         """project.jsonファイルを削除"""
-        project_json_path = self.src_dir / f"{project_name}.project.json"
+        self.migrate_project(project_name)
+        project_json_path = self.data_dir / f"{project_name}.project.json"
         project_json_path.unlink(missing_ok=True)
 
 
@@ -357,10 +380,11 @@ class SourceCodeDownloader:
 class OpenGrokClient:
     """OpenGrokAPIClientとProjectJsonManagerを統合し、統一的なインターフェースを提供するクラス"""
 
-    def __init__(self, base_uri: str, src_dir: pathlib.Path):
+    def __init__(self, base_uri: str, src_dir: pathlib.Path, data_dir: pathlib.Path):
         self.base_uri = base_uri
+        self.src_dir = src_dir
         self.api_client = OpenGrokAPIClient(f"{base_uri}/api/v1")
-        self.json_manager = ProjectJsonManager(src_dir)
+        self.json_manager = ProjectJsonManager(data_dir, src_dir)
 
     def get_projects(self) -> dict[str, Project]:
         # OpenGrok APIからプロジェクト名のリストを取得
@@ -493,13 +517,14 @@ class OpenGrokClient:
         Returns:
             bool: 変更があった場合はTrue、変更がなかった場合はFalse
         """
-        downloader = SourceCodeDownloader(self.json_manager.src_dir, self.json_manager)
+        downloader = SourceCodeDownloader(self.src_dir, self.json_manager)
         return downloader.download(project)
 
 
 def main():
     expected_projects = ProjectDefsJson.parse(sys.stdin.read())
-    client = OpenGrokClient('http://localhost:8080', pathlib.Path("/opengrok/src"))
+    client = OpenGrokClient('http://localhost:8080', pathlib.Path("/opengrok/src"),
+                            pathlib.Path("/opengrok/manager_data"))
     actual_projects = client.get_projects()
     logger.info("get_projects", expected_projects=expected_projects, actual_projects=actual_projects)
 
