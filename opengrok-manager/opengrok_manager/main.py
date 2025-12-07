@@ -166,8 +166,9 @@ class ProjectJsonManager:
 class SourceCodeDownloader:
     """ソースコードのダウンロードを担当するクラス"""
 
-    def __init__(self, src_dir: pathlib.Path, json_manager: ProjectJsonManager):
+    def __init__(self, src_dir: pathlib.Path, data_dir: pathlib.Path, json_manager: ProjectJsonManager):
         self.src_dir = src_dir
+        self.data_dir = data_dir
         self.json_manager = json_manager
 
     def download(self, project: Project) -> bool:
@@ -334,49 +335,58 @@ class SourceCodeDownloader:
         response = requests.get(archive_spec.url, stream=True)
         response.raise_for_status()
 
-        # 一時ファイルに保存
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            tmp_path = pathlib.Path(tmp_file.name)
-            try:
+        # data_dirに保存（${data_dir}/${project_name}/archive.${extension}）
+        archive_dir = self.data_dir / project.name
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"archive.{extension}"
+
+        try:
+            # アーカイブファイルをダウンロード
+            with open(archive_path, "wb") as archive_file:
                 for chunk in response.iter_content(chunk_size=8192):
-                    tmp_file.write(chunk)
-                tmp_file.flush()
+                    archive_file.write(chunk)
+                archive_file.flush()
 
-                # ハッシュ検証
-                if archive_spec.digest is not None:
-                    self._verify_hash(tmp_path, archive_spec.digest)
+            # ハッシュ検証
+            if archive_spec.digest is not None:
+                self._verify_hash(archive_path, archive_spec.digest)
 
-                # アーカイブ展開
-                target_dir.mkdir(parents=True, exist_ok=True)
+            # アーカイブ展開
+            target_dir.mkdir(parents=True, exist_ok=True)
 
-                if extension_lower == "zip":
-                    # ZIP形式で展開（unzipコマンドを使用）
-                    result = subprocess.run(
-                        ["unzip", "-q", str(tmp_path), "-d", str(target_dir)],
+            if extension_lower == "zip":
+                # ZIP形式で展開（unzipコマンドを使用）
+                result = subprocess.run(
+                    ["unzip", "-q", str(archive_path), "-d", str(target_dir)],
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                )
+            elif extension_lower == "tar" or extension_lower.startswith("tar."):
+                # TAR形式で展開（.tar, .tar.gz, .tar.bz2, .tar.xz, .tar.zstなど）
+                # tar axfで自動的に圧縮形式を検出して展開
+                try:
+                    subprocess.run(
+                        ["tar", "axf", str(archive_path), "-C", str(target_dir)],
                         check=True,
                         stdin=subprocess.DEVNULL,
                         stdout=sys.stdout,
                         stderr=sys.stderr,
                     )
-                elif extension_lower == "tar" or extension_lower.startswith("tar."):
-                    # TAR形式で展開（.tar, .tar.gz, .tar.bz2, .tar.xz, .tar.zstなど）
-                    # tar axfで自動的に圧縮形式を検出して展開
-                    try:
-                        subprocess.run(
-                            ["tar", "axf", str(tmp_path), "-C", str(target_dir)],
-                            check=True,
-                            stdin=subprocess.DEVNULL,
-                            stdout=sys.stdout,
-                            stderr=sys.stderr,
-                        )
-                    except subprocess.CalledProcessError as e:
-                        raise ValueError(
-                            f"Failed to extract archive file: {extension}. Error: {e}"
-                        ) from e
-                else:
-                    raise ValueError(f"Unsupported archive format: {extension}")
-            finally:
-                tmp_path.unlink(missing_ok=True)
+                except subprocess.CalledProcessError as e:
+                    raise ValueError(
+                        f"Failed to extract archive file: {extension}. Error: {e}"
+                    ) from e
+            else:
+                raise ValueError(f"Unsupported archive format: {extension}")
+        except Exception:
+            # エラーが発生した場合は、不正になっていると思われるデータを削除
+            archive_path.unlink(missing_ok=True)
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            logger.error("Failed to download and extract archive file", project_name=project.name)
+            raise
 
         # ダウンロード/再ダウンロードが実行された場合はTrue
         return True
@@ -400,6 +410,7 @@ class OpenGrokClient:
     def __init__(self, base_uri: str, src_dir: pathlib.Path, data_dir: pathlib.Path):
         self.base_uri = base_uri
         self.src_dir = src_dir
+        self.data_dir = data_dir
         self.api_client = OpenGrokAPIClient(f"{base_uri}/api/v1")
         self.json_manager = ProjectJsonManager(data_dir, src_dir)
 
@@ -534,7 +545,7 @@ class OpenGrokClient:
         Returns:
             bool: 変更があった場合はTrue、変更がなかった場合はFalse
         """
-        downloader = SourceCodeDownloader(self.src_dir, self.json_manager)
+        downloader = SourceCodeDownloader(self.src_dir, self.data_dir, self.json_manager)
         return downloader.download(project)
 
 
@@ -544,6 +555,7 @@ def main():
     # Directory layout:
     #  ${src_dir}/${project_name}/ - git worktree or content of archive file.
     #  ${data_dir}/${project_name}/project.json - project metadata.
+    #  ${data_dir}/${project_name}/archive.${extension} - archive file.
     src_dir = pathlib.Path("/opengrok/src")
     data_dir = pathlib.Path("/opengrok/manager_data")
     client = OpenGrokClient('http://localhost:8080', src_dir, data_dir)
