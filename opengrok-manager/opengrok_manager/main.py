@@ -523,8 +523,13 @@ class OpenGrokClient:
 
 def main():
     expected_projects = ProjectDefsJson.parse(sys.stdin.read())
-    client = OpenGrokClient('http://localhost:8080', pathlib.Path("/opengrok/src"),
-                            pathlib.Path("/opengrok/manager_data"))
+
+    # Directory layout:
+    #  ${src_dir}/${project_name}/ - git worktree or content of archive file.
+    #  ${data_dir}/${project_name}.project.json - project metadata.
+    src_dir = pathlib.Path("/opengrok/src")
+    data_dir = pathlib.Path("/opengrok/manager_data")
+    client = OpenGrokClient('http://localhost:8080', src_dir, data_dir)
     actual_projects = client.get_projects()
     logger.info("get_projects", expected_projects=expected_projects, actual_projects=actual_projects)
 
