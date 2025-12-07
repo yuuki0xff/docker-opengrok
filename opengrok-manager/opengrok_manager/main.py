@@ -102,39 +102,35 @@ class ProjectJsonManager:
         return self.data_dir / project_name / "project.json"
 
     def migrate_project(self, project_name: str):
-        """project.jsonファイルのマイグレーションを実行。
-        1. src_dirからdata_dirへのマイグレーション（古いロジック）
-        2. 古い形式（${data_dir}/${project_name}.project.json）から新しい形式（${data_dir}/${project_name}/project.json）へのマイグレーション"""
-        # マイグレーション1: src_dirからdata_dirへのマイグレーション（将来的に廃止予定）
-        old_src_path = self.src_dir / f"{project_name}.project.json"
+        """project.jsonファイルのマイグレーションを実行。"""
         new_path = self._get_project_json_path(project_name)
 
-        if old_src_path.exists() and not new_path.exists():
-            try:
-                # data_dirが存在しない場合は作成
-                self.data_dir.mkdir(parents=True, exist_ok=True)
-                # ファイルを移動
-                shutil.move(str(old_src_path), str(new_path))
-                logger.info("Migrated project.json from src_dir", project_name=project_name,
-                            from_path=str(old_src_path),
-                            to_path=str(new_path))
-            except Exception as e:
-                raise Exception(f"Failed to migrate project.json from src_dir: {e}") from e
+        # マイグレーション対象の古いパスを定義
+        migration_sources = [
+            self.src_dir / f"{project_name}.project.json",
+            self.data_dir / f"{project_name}.project.json",
+        ]
 
-        # マイグレーション2: 古い形式から新しい形式へのマイグレーション
-        old_flat_path = self.data_dir / f"{project_name}.project.json"
-        if old_flat_path.exists() and not new_path.exists():
+        for old_path in migration_sources:
+            if not old_path.exists():
+                continue
+
             try:
-                # プロジェクトディレクトリを作成
-                project_dir = self.data_dir / project_name
-                project_dir.mkdir(parents=True, exist_ok=True)
-                # ファイルを移動
-                shutil.move(str(old_flat_path), str(new_path))
-                logger.info("Migrated project.json to new format", project_name=project_name,
-                            from_path=str(old_flat_path),
-                            to_path=str(new_path))
+                if not new_path.exists():
+                    # 移動先のディレクトリを作成
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    # ファイルを移動
+                    shutil.move(str(old_path), str(new_path))
+                    logger.info("Migrated project.json", project_name=project_name,
+                                from_path=str(old_path),
+                                to_path=str(new_path))
+                else:
+                    # new_pathが既に存在する場合は古いファイルを削除
+                    old_path.unlink()
+                    logger.info("Removed old project.json", project_name=project_name,
+                                path=str(old_path))
             except Exception as e:
-                raise Exception(f"Failed to migrate project.json to new format: {e}") from e
+                raise Exception(f"Failed to migrate project.json from {old_path} to {new_path}") from e
 
     def load_project(self, project_name: str) -> typing.Optional[Project]:
         """project.jsonファイルからプロジェクト情報を読み込む"""
