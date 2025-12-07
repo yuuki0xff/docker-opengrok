@@ -3,8 +3,8 @@
 ## Usage
 
 ```shell
-cp -a example/.env example/docker-compose.override.yml ./
-# Edit .env and docker-compose.override.yml
+cp -a example/.env example/compose.override.yaml ./
+# Edit .env and compose.override.yaml
 
 docker compose up -d
 
