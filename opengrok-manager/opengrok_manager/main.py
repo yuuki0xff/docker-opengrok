@@ -97,11 +97,15 @@ class ProjectJsonManager:
         self.data_dir = data_dir
         self.src_dir = src_dir  # マイグレーション専用（将来的に廃止予定）
 
+    def _get_project_json_path(self, project_name: str) -> pathlib.Path:
+        """project.jsonファイルのパスを生成"""
+        return self.data_dir / f"{project_name}.project.json"
+
     def migrate_project(self, project_name: str):
         """src_dirからdata_dirにproject.jsonファイルをマイグレーション。
         このロジックは、移行が完了次第削除する。"""
         old_path = self.src_dir / f"{project_name}.project.json"
-        new_path = self.data_dir / f"{project_name}.project.json"
+        new_path = self._get_project_json_path(project_name)
 
         if old_path.exists() and not new_path.exists():
             try:
@@ -117,7 +121,7 @@ class ProjectJsonManager:
     def load_project(self, project_name: str) -> typing.Optional[Project]:
         """project.jsonファイルからプロジェクト情報を読み込む"""
         self.migrate_project(project_name)
-        project_json_path = self.data_dir / f"{project_name}.project.json"
+        project_json_path = self._get_project_json_path(project_name)
         if not project_json_path.exists():
             return None
 
@@ -135,14 +139,14 @@ class ProjectJsonManager:
         self.migrate_project(project.name)
         # data_dirが存在しない場合は作成
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        project_json_path = self.data_dir / f"{project.name}.project.json"
+        project_json_path = self._get_project_json_path(project.name)
         with open(project_json_path, "w") as f:
             f.write(project.to_json(indent=2))
 
     def delete_project(self, project_name: str):
         """project.jsonファイルを削除"""
         self.migrate_project(project_name)
-        project_json_path = self.data_dir / f"{project_name}.project.json"
+        project_json_path = self._get_project_json_path(project_name)
         project_json_path.unlink(missing_ok=True)
 
 
