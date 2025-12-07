@@ -5,10 +5,8 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import typing
-import zipfile
 
 import requests
 import structlog
@@ -34,15 +32,9 @@ class HashSpec:
 
 @dataclass_json
 @dataclasses.dataclass
-class TarSpec:
+class ArchiveFileSpec:
     url: str
-    digest: typing.Optional[HashSpec] = None
-
-
-@dataclass_json
-@dataclasses.dataclass
-class ZipSpec:
-    url: str
+    extension: typing.Optional[str] = None
     digest: typing.Optional[HashSpec] = None
 
 
@@ -51,8 +43,7 @@ class ZipSpec:
 class Project:
     name: str
     git: typing.Optional[GitSpec] = None
-    tar: typing.Optional[TarSpec] = None
-    zip: typing.Optional[ZipSpec] = None
+    archive: typing.Optional[ArchiveFileSpec] = None
 
 
 @dataclass_json
@@ -147,15 +138,13 @@ class SourceCodeDownloader:
         """
         target_dir = self.src_dir / project.name
 
-        # git, tar, zipの順で確認し、最初に見つかったものを使用
+        # git, archiveの順で確認し、最初に見つかったものを使用
         if project.git is not None:
             return self._download_git(project, target_dir)
-        elif project.tar is not None:
-            return self._download_tar(project, target_dir)
-        elif project.zip is not None:
-            return self._download_zip(project, target_dir)
+        elif project.archive is not None:
+            return self._download_archive(project, target_dir)
         else:
-            raise ValueError(f"Project {project.name} has no git, tar, or zip specification")
+            raise ValueError(f"Project {project.name} has no git or archive specification")
 
     def _download_git(self, project: Project, target_dir: pathlib.Path) -> bool:
         """Git形式でソースコードをダウンロード
@@ -264,27 +253,45 @@ class SourceCodeDownloader:
             # 新規クローンの場合は常にTrue
             return True
 
-    def _download_tar(self, project: Project, target_dir: pathlib.Path) -> bool:
-        """Tar形式でソースコードをダウンロード
+    def _download_archive(self, project: Project, target_dir: pathlib.Path) -> bool:
+        """アーカイブ形式でソースコードをダウンロード
         
         Returns:
             bool: 変更があった場合はTrue、変更がなかった場合はFalse
         """
-        tar_spec = project.tar
-        if tar_spec is None:
-            raise ValueError(f"Project {project.name} has no tar specification")
+        archive_spec = project.archive
+        if archive_spec is None:
+            raise ValueError(f"Project {project.name} has no archive specification")
+
+        # 拡張子を判定
+        extension = archive_spec.extension
+        if extension is None:
+            # URLから拡張子を抽出
+            url_path = pathlib.Path(archive_spec.url)
+            # .tar.gz, .tar.bz2, .tar.xz, .tar.zstなどの複合拡張子に対応
+            if url_path.suffixes:
+                if len(url_path.suffixes) >= 2 and url_path.suffixes[-2] == ".tar":
+                    extension = "".join(url_path.suffixes[-2:])
+                else:
+                    extension = url_path.suffixes[-1]
+            else:
+                raise ValueError(f"Cannot determine file extension from URL: {archive_spec.url}")
+
+        # 拡張子を正規化（先頭のドットを削除）
+        extension = extension.lstrip(".")
+        extension_lower = extension.lower()
 
         # 既存ディレクトリがある場合、以前のProject情報と比較
         if target_dir.exists():
             old_project = self.json_manager.load_project(project.name)
-            if old_project is not None and old_project.tar == tar_spec:
+            if old_project is not None and old_project.archive == archive_spec:
                 # 一致する場合: 何もしない
                 return False
             # 異なる場合: ディレクトリを削除
             shutil.rmtree(target_dir)
 
         # HTTPダウンロード
-        response = requests.get(tar_spec.url, stream=True)
+        response = requests.get(archive_spec.url, stream=True)
         response.raise_for_status()
 
         # 一時ファイルに保存
@@ -296,22 +303,38 @@ class SourceCodeDownloader:
                 tmp_file.flush()
 
                 # ハッシュ検証
-                if tar_spec.digest is not None:
-                    self._verify_hash(tmp_path, tar_spec.digest)
+                if archive_spec.digest is not None:
+                    self._verify_hash(tmp_path, archive_spec.digest)
 
-                # tar展開
-                target_dir.parent.mkdir(parents=True, exist_ok=True)
-                with tarfile.open(tmp_path, "r:*") as tar:
-                    tar.extractall(path=target_dir.parent)
-                    # tarファイルの内容が1つのディレクトリに展開される場合、そのディレクトリをtarget_dirにリネーム
-                    if not target_dir.exists():
-                        members = tar.getmembers()
-                        if members:
-                            first_member = members[0]
-                            if first_member.isdir():
-                                extracted_dir = target_dir.parent / first_member.name
-                                if extracted_dir.exists() and extracted_dir != target_dir:
-                                    extracted_dir.rename(target_dir)
+                # アーカイブ展開
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                if extension_lower == "zip":
+                    # ZIP形式で展開（unzipコマンドを使用）
+                    result = subprocess.run(
+                        ["unzip", "-q", str(tmp_path), "-d", str(target_dir)],
+                        check=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                    )
+                elif extension_lower == "tar" or extension_lower.startswith("tar."):
+                    # TAR形式で展開（.tar, .tar.gz, .tar.bz2, .tar.xz, .tar.zstなど）
+                    # tar axfで自動的に圧縮形式を検出して展開
+                    try:
+                        subprocess.run(
+                            ["tar", "axf", str(tmp_path), "-C", str(target_dir)],
+                            check=True,
+                            stdin=subprocess.DEVNULL,
+                            stdout=sys.stdout,
+                            stderr=sys.stderr,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        raise ValueError(
+                            f"Failed to extract archive file: {extension}. Error: {e}"
+                        ) from e
+                else:
+                    raise ValueError(f"Unsupported archive format: {extension}")
             finally:
                 tmp_path.unlink(missing_ok=True)
 
@@ -329,60 +352,6 @@ class SourceCodeDownloader:
             raise ValueError(
                 f"Hash mismatch: expected {digest.value}, got {computed_hash}"
             )
-
-    def _download_zip(self, project: Project, target_dir: pathlib.Path) -> bool:
-        """Zip形式でソースコードをダウンロード
-        
-        Returns:
-            bool: 変更があった場合はTrue、変更がなかった場合はFalse
-        """
-        zip_spec = project.zip
-        if zip_spec is None:
-            raise ValueError(f"Project {project.name} has no zip specification")
-
-        # 既存ディレクトリがある場合、以前のProject情報と比較
-        if target_dir.exists():
-            old_project = self.json_manager.load_project(project.name)
-            if old_project is not None and old_project.zip == zip_spec:
-                # 一致する場合: 何もしない
-                return False
-            # 異なる場合: ディレクトリを削除
-            shutil.rmtree(target_dir)
-
-        # HTTPダウンロード
-        response = requests.get(zip_spec.url, stream=True)
-        response.raise_for_status()
-
-        # 一時ファイルに保存
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            tmp_path = pathlib.Path(tmp_file.name)
-            try:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp_file.write(chunk)
-                tmp_file.flush()
-
-                # ハッシュ検証
-                if zip_spec.digest is not None:
-                    self._verify_hash(tmp_path, zip_spec.digest)
-
-                # zip展開
-                target_dir.parent.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(tmp_path, "r") as zip_file:
-                    zip_file.extractall(path=target_dir.parent)
-                    # zipファイルの内容が1つのディレクトリに展開される場合、そのディレクトリをtarget_dirにリネーム
-                    if not target_dir.exists():
-                        members = zip_file.namelist()
-                        if members:
-                            first_member = members[0]
-                            if first_member.endswith("/"):
-                                extracted_dir = target_dir.parent / first_member.rstrip("/")
-                                if extracted_dir.exists() and extracted_dir != target_dir:
-                                    extracted_dir.rename(target_dir)
-            finally:
-                tmp_path.unlink(missing_ok=True)
-
-        # ダウンロード/再ダウンロードが実行された場合はTrue
-        return True
 
 
 class OpenGrokClient:
