@@ -571,7 +571,8 @@ def main():
         actual = actual_projects.get(name)
         logger.info("Processing project", name=name, expected=expected, actual=actual)
 
-        if expected != actual and actual is not None:
+        need_recreate = expected != actual and actual is not None
+        if need_recreate:
             client.delete_project(actual)
 
         try:
@@ -584,7 +585,7 @@ def main():
             continue
 
         logger.info("Project source code changed", name=name)
-        if actual is None:
+        if actual is None or need_recreate:
             logger.info("Adding project", name=name)
             client.add_project(expected)
 
