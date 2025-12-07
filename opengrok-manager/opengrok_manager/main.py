@@ -565,6 +565,7 @@ def main():
     extra_project_names = set(actual_projects.keys()) - set(expected_projects.keys())
     for project_name in extra_project_names:
         client.delete_project(actual_projects[project_name])
+        logger.info("Deleted project", name=project_name)
 
     for name in expected_projects:
         expected = expected_projects[name]
@@ -574,6 +575,7 @@ def main():
         need_recreate = expected != actual and actual is not None
         if need_recreate:
             client.delete_project(actual)
+            logger.info("Deleted project due to project.json mismatch", name=name)
 
         try:
             changed = client.download_source_code(expected)
