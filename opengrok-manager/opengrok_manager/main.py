@@ -1,3 +1,4 @@
+import argparse
 import dataclasses
 import hashlib
 import os
@@ -10,6 +11,7 @@ import typing
 
 import requests
 import structlog
+import tenacity
 from dataclasses_json import dataclass_json
 
 logger = structlog.get_logger()
@@ -550,6 +552,15 @@ class OpenGrokClient:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--reindex-retries",
+        type=int,
+        default=3,
+        help="Number of retries for reindex_project when it fails with subprocess.CalledProcessError",
+    )
+    args = parser.parse_args()
+
     expected_projects = ProjectDefsJson.parse(sys.stdin.read())
 
     # Directory layout:
@@ -592,7 +603,14 @@ def main():
             client.add_project(expected)
 
         logger.info("Reindexing project", name=name)
-        client.reindex_project(expected)
+        # NOTE: The opengrok-reindex-project command may fail with non-zero exit code. So we need to retry it.
+        reindex_project_retry = tenacity.retry(
+            retry=tenacity.retry_if_exception_type(subprocess.CalledProcessError),
+            stop=tenacity.stop_after_attempt(args.reindex_retries),
+            wait=tenacity.wait_exponential_jitter(max=60),
+        )(client.reindex_project)
+        reindex_project_retry(expected)  # type: ignore
+        logger.info("Reindexed project", name=name)
 
 
 if __name__ == "__main__":
