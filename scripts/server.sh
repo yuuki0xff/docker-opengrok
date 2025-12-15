@@ -10,6 +10,9 @@ if [ -f /run/secrets/ssh_private_key ]; then
     install -m 400 /run/secrets/ssh_public_key /root/.ssh/id_ed25519.pub
     install -m 600 /run/secrets/ssh_known_hosts /root/.ssh/known_hosts
 fi
+if [ -f /run/secrets/ssh_config ]; then
+    install -m 600 /run/secrets/ssh_config /root/.ssh/config
+fi
 
 if [ ! -f /opengrok/etc/configuration.xml ]; then
     echo "No configuration file found, initializing..."

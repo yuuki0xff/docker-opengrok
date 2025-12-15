@@ -4,6 +4,7 @@ services:
       - ssh_private_key
       - ssh_public_key
       - ssh_known_hosts
+      - ssh_config
 
 secrets:
   ssh_private_key:
@@ -12,3 +13,5 @@ secrets:
     file: /home/username/.ssh/id_ed25519.pub
   ssh_known_hosts:
     file: /home/username/.ssh/known_hosts
+  ssh_config:
+    file: ./ssh_config

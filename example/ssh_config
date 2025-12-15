@@ -1,0 +1,3 @@
+ControlMaster auto
+ControlPath /tmp/.ssh-%u.%C
+ControlPersist 120
