@@ -210,16 +210,20 @@ class SourceCodeDownloader:
         if use_existing_repo:
             # 既存ディレクトリがある場合: git fetch && git reset --hard origin/<ref>
             # fetch前のHEAD commit idを取得
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=target_dir,
-                check=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=sys.stderr,
-                text=True,
-            )
-            old_commit_id = result.stdout.strip()
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=target_dir,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=sys.stderr,
+                    text=True,
+                )
+                old_commit_id = result.stdout.strip()
+            except subprocess.CalledProcessError:
+                # empty repoの場合は、HEADが存在しないため、空文字列とする。
+                old_commit_id = ""
 
             subprocess.run(
                 ["git", "fetch", "origin"],
@@ -260,16 +264,20 @@ class SourceCodeDownloader:
                 )
 
             # fetch後のHEAD commit idを取得
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=target_dir,
-                check=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=sys.stderr,
-                text=True,
-            )
-            new_commit_id = result.stdout.strip()
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=target_dir,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=sys.stderr,
+                    text=True,
+                )
+                new_commit_id = result.stdout.strip()
+            except subprocess.CalledProcessError:
+                # empty repoの場合は、HEADが存在しないため、空文字列とする。
+                new_commit_id = ""
 
             # commit idが変化していた場合はTrue、同一の場合はFalse
             return old_commit_id != new_commit_id
